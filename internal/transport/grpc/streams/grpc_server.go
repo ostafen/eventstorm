@@ -9,16 +9,16 @@ import (
 
 	"github.com/gofrs/uuid"
 	"github.com/ostafen/eventstorm/internal/model"
-	"github.com/ostafen/eventstorm/internal/streams"
+	"github.com/ostafen/eventstorm/internal/service"
 	shared "github.com/ostafen/eventstorm/internal/transport/grpc/shared"
 )
 
 type grpcServer struct {
-	svc streams.StreamService
+	svc service.StreamService
 	UnimplementedStreamsServer
 }
 
-func NewStreamsServer(svc streams.StreamService) *grpcServer {
+func NewStreamsServer(svc service.StreamService) *grpcServer {
 	return &grpcServer{
 		svc: svc,
 	}
@@ -130,7 +130,7 @@ func (s *grpcServer) Append(server Streams_AppendServer) error {
 
 	it := &eventIterator{server: server}
 	appendRes, err := s.svc.Append(server.Context(), string(stream), it, appendOptions)
-	if errors.Is(err, streams.ErrInvalidStreamRevision) {
+	if errors.Is(err, service.ErrInvalidStreamRevision) {
 		return server.SendAndClose(&AppendResp{
 			Result: wrongRevisionAnswer(appendRes, appendOptions),
 		})

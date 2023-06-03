@@ -1,4 +1,4 @@
-package streams
+package service
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/ostafen/eventstorm/internal/backend"
 	"github.com/ostafen/eventstorm/internal/model"
+	"github.com/ostafen/eventstorm/internal/projections"
 )
 
 var (
@@ -37,10 +38,11 @@ type StreamInfo struct {
 }
 
 type streamService struct {
-	mtx sync.RWMutex
-
+	mtx     sync.RWMutex
 	streams map[string]int64
-	db      *sql.DB
+
+	db                *sql.DB
+	ProjectionRuntime *projections.Runtime
 }
 
 func (s *streamService) fetchRevision(name string) (int64, error) {
@@ -100,7 +102,7 @@ func (s *streamService) checkRevision(name string, opts model.AppendOptions) (in
 	return revision, nil
 }
 
-func (s *streamService) newRepo() (*sql.Tx, *backend.Backend, error) {
+func (s *streamService) newBackend() (*sql.Tx, *backend.Backend, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, nil, err
@@ -108,55 +110,37 @@ func (s *streamService) newRepo() (*sql.Tx, *backend.Backend, error) {
 	return tx, backend.NewBackend(tx), nil
 }
 
-func (s *streamService) Append(ctx context.Context, name string, stream model.EventStream, opts model.AppendOptions) (model.AppendResult, error) {
+func (s *streamService) append(ctx context.Context, backend *backend.Backend, name string, stream model.EventStream, opts model.AppendOptions) ([]model.Event, model.AppendResult, error) {
 	currentRevision, err := s.checkRevision(name, opts)
 	if err != nil {
-		return model.AppendResult{}, err
-	}
-
-	tx, r, err := s.newRepo()
-	if err != nil {
-		return model.AppendResult{}, err
-	}
-	defer tx.Rollback()
-
-	commit := func() error {
-		err := tx.Commit()
-		if err == nil {
-			s.mtx.Lock()
-			if currentRevision > s.streams[name] {
-				s.streams[name] = currentRevision
-			}
-			s.mtx.Unlock()
-		}
-		return err
+		return nil, model.AppendResult{}, err
 	}
 
 	var startPos uint64
 	for {
 		e, err := stream.Next()
 		if err != nil && !errors.Is(err, io.EOF) {
-			return model.AppendResult{}, err
+			return nil, model.AppendResult{}, err
 		}
 
 		if errors.Is(err, io.EOF) {
-			return model.AppendResult{
+			return nil, model.AppendResult{
 				Revision:        uint64(currentRevision),
 				PreparePosition: startPos,
 				CommitPosition:  startPos,
-			}, commit()
+			}, nil
 		}
 
 		if err := validateEvent(e); err != nil {
-			return model.AppendResult{}, err
+			return nil, model.AppendResult{}, err
 		}
 
 		e.StreamRevision = uint64(currentRevision) + 1
 		e.Metadata[systemMetadataCreated] = strconv.FormatInt(time.Now().UTC().UnixNano()/100, 10)
 
-		pos, err := r.Append(ctx, name, e)
+		pos, err := backend.Append(ctx, name, e)
 		if err != nil {
-			return model.AppendResult{}, err
+			return nil, model.AppendResult{}, err
 		}
 		currentRevision++
 
@@ -164,6 +148,28 @@ func (s *streamService) Append(ctx context.Context, name string, stream model.Ev
 			startPos = pos
 		}
 	}
+}
+
+func (s *streamService) Append(ctx context.Context, name string, stream model.EventStream, opts model.AppendOptions) (model.AppendResult, error) {
+	tx, backend, err := s.newBackend()
+	if err != nil {
+		return model.AppendResult{}, err
+	}
+	defer tx.Rollback()
+
+	_, res, err := s.append(ctx, backend, name, stream, opts)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return res, err
+		}
+
+		s.mtx.Lock()
+		if int64(res.Revision) > s.streams[name] {
+			s.streams[name] = int64(res.Revision)
+		}
+		s.mtx.Unlock()
+	}
+	return res, err
 }
 
 func validateEvent(e *model.Event) error {
@@ -212,6 +218,25 @@ func (s *streamService) Subscribe(ctx context.Context, onEvent func(*model.Event
 			return err
 		}
 	}
+}
+
+type CreateProjectionOptions struct {
+	Name  string
+	Query string
+}
+
+func (s *streamService) CreateProjection(ctx context.Context, opts CreateProjectionOptions) error {
+	r := backend.NewBackend(s.db)
+
+	if err := s.ProjectionRuntime.Register(opts.Query, opts.Name); err != nil {
+		return err
+	}
+
+	return r.SaveProjection(ctx, opts.Name, opts.Query)
+}
+
+func (s *streamService) UpdateProjection(ctx context.Context, opts CreateProjectionOptions) error {
+	return nil
 }
 
 func NewSteamsService(db *sql.DB) StreamService {

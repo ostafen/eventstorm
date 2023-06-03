@@ -1,4 +1,4 @@
-package streams_test
+package service_test
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ostafen/eventstorm/internal/backend"
 	"github.com/ostafen/eventstorm/internal/model"
-	"github.com/ostafen/eventstorm/internal/streams"
+	"github.com/ostafen/eventstorm/internal/service"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -23,11 +23,11 @@ type ServiceSuite struct {
 
 	db        *sql.DB
 	container testcontainers.Container
-	svc       streams.StreamService
+	svc       service.StreamService
 }
 
 func TestServiceSuite(t *testing.T) {
-	suite.Run(t, new(ServiceSuite))
+	suite.Run(t, &ServiceSuite{})
 }
 
 const (
@@ -83,7 +83,7 @@ func (s *ServiceSuite) SetupTest() {
 	_, err := s.db.Exec("DROP TABLE IF EXISTS events")
 	s.NoError(err)
 
-	s.svc = streams.NewSteamsService(s.db)
+	s.svc = service.NewSteamsService(s.db)
 }
 
 func (s *ServiceSuite) SetupSuite() {
@@ -124,13 +124,13 @@ func genEvents(n int) []*model.Event {
 
 func (s *ServiceSuite) TestAppendInvalidEvent() {
 	_, err := s.svc.Append(context.TODO(), "test-stream", &bufferEventStream{Events: []*model.Event{{}}}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
-	s.Error(err, streams.ErrNoContentTypeMetadata)
+	s.Error(err, service.ErrNoContentTypeMetadata)
 
 	_, err = s.svc.Append(context.TODO(), "test-stream",
 		&bufferEventStream{Events: []*model.Event{{Metadata: model.Metadata{"content-type": "type"}}}},
 		model.AppendOptions{Kind: model.RevisionAppendKindAny})
 
-	s.Error(err, streams.ErrNoEventTypeMetadata)
+	s.Error(err, service.ErrNoEventTypeMetadata)
 }
 
 func (s *ServiceSuite) TestAppendToNonExistentStream() {
@@ -140,7 +140,7 @@ func (s *ServiceSuite) TestAppendToNonExistentStream() {
 
 	res, err := s.svc.Append(ctx, "test-stream", &bufferEventStream{Events: events}, model.AppendOptions{Kind: model.RevisionAppendKindExist})
 	s.Equal(res, model.AppendResult{})
-	s.Error(err, streams.ErrInvalidStreamRevision)
+	s.Error(err, service.ErrInvalidStreamRevision)
 
 	res, err = s.svc.Append(ctx, "test-stream1", &bufferEventStream{Events: events}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
 	s.Equal(res, model.AppendResult{Revision: 9, PreparePosition: 1, CommitPosition: 1})
@@ -168,7 +168,7 @@ func (s *ServiceSuite) TestAppendToExistentStream() {
 	// append with invalid revision
 	res, err = s.svc.Append(ctx, "test-stream", &bufferEventStream{Events: genEvents(5)}, model.AppendOptions{Kind: model.RevisionAppendKindRevision, Revision: 20})
 	s.Zero(res)
-	s.Error(err, streams.ErrInvalidStreamRevision)
+	s.Error(err, service.ErrInvalidStreamRevision)
 }
 
 func (s *ServiceSuite) createStreamWithEvents(stream string, n int) model.AppendResult {

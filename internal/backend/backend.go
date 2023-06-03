@@ -49,6 +49,11 @@ func (r *Backend) Init() error {
 
 		CREATE INDEX IF NOT EXISTS position_index on events (position);
 		CREATE INDEX IF NOT EXISTS stream_index on events (stream);
+
+		CREATE TABLE IF NOT EXISTS projections (
+			name TEXT PRIMARY KEY,
+			query TEXT NOT NULL
+		);
 	`)
 	return convertError(err)
 }
@@ -351,6 +356,26 @@ func scanEvent(rows *sql.Rows) (*model.Event, error) {
 		&e.GlobalPosition,
 	)
 	return &e, err
+}
+
+func (b *Backend) SaveProjection(ctx context.Context, name string, query string) error {
+	_, err := b.db.ExecContext(ctx,
+		`INSERT INTO projections (name, query) 
+			VALUES ($1, $2)
+			ON CONFLICT (name)
+			DO
+				UPDATE SET query = $2;
+		`,
+		name, query)
+	return err
+}
+
+func (b *Backend) GetProjectionByName(ctx context.Context, name string) (string, error) {
+	row := b.db.QueryRowContext(ctx, `SELECT query WHERE name = $1`, name)
+
+	var query string
+	err := row.Scan(&query)
+	return query, err
 }
 
 var (

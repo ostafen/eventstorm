@@ -1,11 +1,38 @@
 package projections
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/dop251/goja"
 	"github.com/ostafen/eventstorm/internal/model"
 )
+
+var ErrProjectionExist = errors.New("projection already exists")
+
+type Runtime struct {
+	projections map[string]*Context
+}
+
+func NewRuntime() *Runtime {
+	return &Runtime{
+		projections: map[string]*Context{},
+	}
+}
+
+func (r *Runtime) Register(source, name string) error {
+	if _, has := r.projections[name]; has {
+		return ErrProjectionExist
+	}
+
+	ctx, err := NewContext(source, name)
+	if err != nil {
+		return err
+	}
+
+	r.projections[name] = ctx
+	return nil
+}
 
 const (
 	initFunc   = "$init"
@@ -13,10 +40,10 @@ const (
 )
 
 type Options struct {
-	StreamName    string `json:"resultStreamName"`
+	ResultStream  string `json:"resultStreamName"`
 	IncludeLinks  bool   `json:"$includeLinks"`
 	ReorderEvents bool   `json:"reorderEvents"`
-	ProcessingLag bool   `json:"processingLag"`
+	ProcessingLag int    `json:"processingLag"`
 }
 
 type Event struct {
@@ -70,6 +97,19 @@ const (
 type SelectorOptions struct {
 	Kind    SelectorKind
 	Streams []string
+}
+
+func (s *SelectorOptions) Matches(e *model.Event) bool {
+	if s.Kind == SelectorKindAll {
+		return true
+	}
+
+	for _, s := range s.Streams {
+		if s == e.StreamIdentifier {
+			return true
+		}
+	}
+	return false
 }
 
 type Context struct {
@@ -204,7 +244,10 @@ type FilterByRes struct {
 func (t *filterBy) FilterBy(filterFunc gojaFunc) FilterByRes {
 	t.ctx.UpdateFunc = t.ctx.UpdateFunc.Chain(func(state any, e Event) (any, bool) {
 		forward, _ := filterFunc.Call(t.ctx.runtime, state).(bool)
-		return state, forward
+		if forward {
+			return state, forward
+		}
+		return nil, forward
 	})
 
 	return FilterByRes{
@@ -312,6 +355,7 @@ func (ctx *Context) fromStreams(stream ...string) FromStreamsRes {
 	return FromStreamsRes{
 		when:        when{ctx: ctx},
 		partitionBy: partitionBy{ctx: ctx},
+		outputState: outputState{ctx: ctx},
 	}
 }
 
@@ -328,18 +372,19 @@ func (ctx *Context) fromAll() FromAllRes {
 	}
 }
 
-func NewContext() *Context {
+func NewContext(source, name string) (*Context, error) {
 	ctx := &Context{
 		runtime:    goja.New(),
 		UpdateFunc: func(state any, e Event) (any, bool) { return nil, true },
 	}
 	ctx.setup()
-	return ctx
+
+	_, err := ctx.runtime.RunString(source)
+	return ctx, err
 }
 
-func (ctx *Context) Update(e Event) any {
-	res, _ := ctx.UpdateFunc(nil, e)
-	return res
+func (ctx *Context) Update(e Event) (any, bool) {
+	return ctx.UpdateFunc(nil, e)
 }
 
 func panicIfErr(err error) {
