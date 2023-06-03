@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/ostafen/eventstorm/internal/service"
+	"github.com/ostafen/eventstorm/internal/streams"
 	"github.com/ostafen/eventstorm/internal/transport/grpc/serverfeatures"
 	grpcstreams "github.com/ostafen/eventstorm/internal/transport/grpc/streams"
 
@@ -27,7 +27,7 @@ func main() {
 	server := grpc.NewServer()
 
 	serverfeatures.RegisterServerFeaturesServer(server, serverfeatures.NewServerFeatures())
-	grpcstreams.RegisterStreamsServer(server, grpcstreams.NewStreamsServer(service.NewSteamsService(db)))
+	grpcstreams.RegisterStreamsServer(server, grpcstreams.NewStreamsServer(streams.NewSteamsService(db)))
 
 	server.Serve(lis)
 }

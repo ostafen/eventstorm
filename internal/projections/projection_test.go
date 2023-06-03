@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/ostafen/eventstorm/internal/model"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -45,6 +46,12 @@ func (s *ProjectionSuite) TestFromStreamSelector() {
 		Kind:    SelectorKindStream,
 		Streams: []string{"test-stream"},
 	})
+
+	s.False(ctx.selector.Matches(&model.Event{}))
+
+	s.True(ctx.selector.Matches(&model.Event{
+		StreamIdentifier: "test-stream",
+	}))
 }
 
 func (s *ProjectionSuite) TestOutputState() {

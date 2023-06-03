@@ -1,4 +1,4 @@
-package service
+package streams
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 
 	"github.com/ostafen/eventstorm/internal/backend"
 	"github.com/ostafen/eventstorm/internal/model"
-	"github.com/ostafen/eventstorm/internal/projections"
 )
 
 var (
@@ -41,8 +40,7 @@ type streamService struct {
 	mtx     sync.RWMutex
 	streams map[string]int64
 
-	db                *sql.DB
-	ProjectionRuntime *projections.Runtime
+	db *sql.DB
 }
 
 func (s *streamService) fetchRevision(name string) (int64, error) {
@@ -110,21 +108,21 @@ func (s *streamService) newBackend() (*sql.Tx, *backend.Backend, error) {
 	return tx, backend.NewBackend(tx), nil
 }
 
-func (s *streamService) append(ctx context.Context, backend *backend.Backend, name string, stream model.EventStream, opts model.AppendOptions) ([]model.Event, model.AppendResult, error) {
+func (s *streamService) append(ctx context.Context, backend *backend.Backend, name string, stream model.EventStream, opts model.AppendOptions) (model.AppendResult, error) {
 	currentRevision, err := s.checkRevision(name, opts)
 	if err != nil {
-		return nil, model.AppendResult{}, err
+		return model.AppendResult{}, err
 	}
 
 	var startPos uint64
 	for {
 		e, err := stream.Next()
 		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, model.AppendResult{}, err
+			return model.AppendResult{}, err
 		}
 
 		if errors.Is(err, io.EOF) {
-			return nil, model.AppendResult{
+			return model.AppendResult{
 				Revision:        uint64(currentRevision),
 				PreparePosition: startPos,
 				CommitPosition:  startPos,
@@ -132,7 +130,7 @@ func (s *streamService) append(ctx context.Context, backend *backend.Backend, na
 		}
 
 		if err := validateEvent(e); err != nil {
-			return nil, model.AppendResult{}, err
+			return model.AppendResult{}, err
 		}
 
 		e.StreamRevision = uint64(currentRevision) + 1
@@ -140,7 +138,7 @@ func (s *streamService) append(ctx context.Context, backend *backend.Backend, na
 
 		pos, err := backend.Append(ctx, name, e)
 		if err != nil {
-			return nil, model.AppendResult{}, err
+			return model.AppendResult{}, err
 		}
 		currentRevision++
 
@@ -165,7 +163,7 @@ func (s *streamService) Append(ctx context.Context, name string, stream model.Ev
 	}
 	defer tx.Rollback()
 
-	_, res, err := s.append(ctx, backend, name, stream, opts)
+	res, err := s.append(ctx, backend, name, stream, opts)
 	if err == nil {
 		if err := tx.Commit(); err != nil {
 			return res, err
@@ -221,25 +219,6 @@ func (s *streamService) Subscribe(ctx context.Context, onEvent func(*model.Event
 			return err
 		}
 	}
-}
-
-type CreateProjectionOptions struct {
-	Name  string
-	Query string
-}
-
-func (s *streamService) CreateProjection(ctx context.Context, opts CreateProjectionOptions) error {
-	r := backend.NewBackend(s.db)
-
-	if err := s.ProjectionRuntime.Register(opts.Query, opts.Name); err != nil {
-		return err
-	}
-
-	return r.SaveProjection(ctx, opts.Name, opts.Query)
-}
-
-func (s *streamService) UpdateProjection(ctx context.Context, opts CreateProjectionOptions) error {
-	return nil
 }
 
 func NewSteamsService(db *sql.DB) StreamService {
