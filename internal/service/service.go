@@ -150,6 +150,14 @@ func (s *streamService) append(ctx context.Context, backend *backend.Backend, na
 	}
 }
 
+func (s *streamService) updateStreamRevision(stream string, revision int64) {
+	s.mtx.Lock()
+	if revision > s.streams[stream] {
+		s.streams[stream] = revision
+	}
+	s.mtx.Unlock()
+}
+
 func (s *streamService) Append(ctx context.Context, name string, stream model.EventStream, opts model.AppendOptions) (model.AppendResult, error) {
 	tx, backend, err := s.newBackend()
 	if err != nil {
@@ -162,12 +170,7 @@ func (s *streamService) Append(ctx context.Context, name string, stream model.Ev
 		if err := tx.Commit(); err != nil {
 			return res, err
 		}
-
-		s.mtx.Lock()
-		if int64(res.Revision) > s.streams[name] {
-			s.streams[name] = int64(res.Revision)
-		}
-		s.mtx.Unlock()
+		s.updateStreamRevision(name, int64(res.Revision))
 	}
 	return res, err
 }
