@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	serverPort = 8089
+	defaultServerPort = 2113
 )
 
 func main() {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", serverPort))
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", defaultServerPort))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}

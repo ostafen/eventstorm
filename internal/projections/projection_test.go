@@ -17,7 +17,25 @@ func TestProjectionSuite(t *testing.T) {
 }
 
 func (s *ProjectionSuite) TestOptionsFunc() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
+		options({
+			$includeLinks:    true,
+			reorderEvents:    false,
+			processingLag:    10
+		})
+	`, "test")
+	s.NoError(err)
+
+	s.Equal(p.Options, Options{
+		ResultStream:  "",
+		IncludeLinks:  true,
+		ReorderEvents: false,
+		ProcessingLag: 10,
+	})
+	s.Equal("$projections-test-result", p.ResultStream())
+	s.False(p.Output)
+
+	p, err = NewProjection(`
 		options({
 			resultStreamName: "test_projection_result",
 			$includeLinks:    true,
@@ -27,45 +45,46 @@ func (s *ProjectionSuite) TestOptionsFunc() {
 	`, "test")
 	s.NoError(err)
 
-	s.Equal(ctx.Options, Options{
+	s.Equal(p.Options, Options{
 		ResultStream:  "test_projection_result",
 		IncludeLinks:  true,
 		ReorderEvents: false,
 		ProcessingLag: 10,
 	})
-	s.False(ctx.Output)
+	s.Equal("test_projection_result", p.ResultStream())
+	s.False(p.Output)
 }
 
 func (s *ProjectionSuite) TestFromStreamSelector() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
 		fromStream('test-stream')
 	`, "test")
 	s.NoError(err)
 
-	s.Equal(ctx.selector, SelectorOptions{
+	s.Equal(p.selector, SelectorOptions{
 		Kind:    SelectorKindStream,
 		Streams: []string{"test-stream"},
 	})
 
-	s.False(ctx.selector.Matches(&model.Event{}))
+	s.False(p.selector.Matches(&model.Event{}))
 
-	s.True(ctx.selector.Matches(&model.Event{
+	s.True(p.selector.Matches(&model.Event{
 		StreamIdentifier: "test-stream",
 	}))
 }
 
 func (s *ProjectionSuite) TestOutputState() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
 		fromStream('test-stream')
 			.outputState()
 	`, "test")
 	s.NoError(err)
 
-	s.True(ctx.Output)
+	s.True(p.Output)
 }
 
 func (s *ProjectionSuite) TestFromStreamWhen() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -78,7 +97,7 @@ func (s *ProjectionSuite) TestFromStreamWhen() {
 	`, "test")
 	s.NoError(err)
 
-	state, _ := ctx.Update(Event{
+	state, _ := p.Update(Event{
 		Type: "invalid-type",
 	})
 	s.Equal(map[string]any{
@@ -86,7 +105,7 @@ func (s *ProjectionSuite) TestFromStreamWhen() {
 	}, state)
 
 	for i := 0; i < 100; i++ {
-		state, _ = ctx.Update(Event{
+		state, _ = p.Update(Event{
 			Type: "testEvent",
 		})
 		s.Equal(map[string]any{
@@ -96,7 +115,7 @@ func (s *ProjectionSuite) TestFromStreamWhen() {
 }
 
 func (s *ProjectionSuite) TestTransformBy() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -113,7 +132,7 @@ func (s *ProjectionSuite) TestTransformBy() {
 	s.NoError(err)
 
 	for i := 0; i < 100; i++ {
-		state, forward := ctx.Update(Event{
+		state, forward := p.Update(Event{
 			Type: "testEvent",
 		})
 		s.True(forward)
@@ -125,7 +144,7 @@ func (s *ProjectionSuite) TestTransformBy() {
 }
 
 func (s *ProjectionSuite) TestFilterBy() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -145,7 +164,7 @@ func (s *ProjectionSuite) TestFilterBy() {
 	s.NoError(err)
 
 	for i := 0; i < 50; i++ {
-		state, forward := ctx.Update(Event{
+		state, forward := p.Update(Event{
 			Type: "testEvent",
 		})
 		s.False(forward)
@@ -153,7 +172,7 @@ func (s *ProjectionSuite) TestFilterBy() {
 	}
 
 	for i := 0; i < 50; i++ {
-		state, forward := ctx.Update(Event{
+		state, forward := p.Update(Event{
 			Type: "testEvent",
 		})
 		s.True(forward)
@@ -165,7 +184,7 @@ func (s *ProjectionSuite) TestFilterBy() {
 }
 
 func (s *ProjectionSuite) TestPartitionBy() {
-	ctx, err := NewContext(`
+	proj, err := NewProjection(`
 		fromStream('test-stream')
 			.partitionBy(function(e) {
 				return e.eventType
@@ -185,7 +204,7 @@ func (s *ProjectionSuite) TestPartitionBy() {
 	for i := 0; i < 100; i++ {
 		p := fmt.Sprintf("p-%d", i/10)
 
-		state, forward := ctx.Update(Event{
+		state, forward := proj.Update(Event{
 			Type: p,
 		})
 		s.True(forward)
@@ -197,7 +216,7 @@ func (s *ProjectionSuite) TestPartitionBy() {
 }
 
 func (s *ProjectionSuite) TestAnyEventHandler() {
-	ctx, err := NewContext(`
+	p, err := NewProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -214,7 +233,7 @@ func (s *ProjectionSuite) TestAnyEventHandler() {
 	s.NoError(err)
 
 	// specific event selector takes precedence
-	state, forward := ctx.Update(Event{
+	state, forward := p.Update(Event{
 		Type: "testEvent",
 	})
 	s.True(forward)
@@ -223,7 +242,7 @@ func (s *ProjectionSuite) TestAnyEventHandler() {
 		"anyCount": int64(0),
 	})
 
-	state, forward = ctx.Update(Event{
+	state, forward = p.Update(Event{
 		Type: "testEvent1",
 	})
 	s.True(forward)

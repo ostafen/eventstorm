@@ -11,12 +11,12 @@ import (
 var ErrProjectionExist = errors.New("projection already exists")
 
 type Runtime struct {
-	projections map[string]*Context
+	projections map[string]*Projection
 }
 
 func NewRuntime() *Runtime {
 	return &Runtime{
-		projections: map[string]*Context{},
+		projections: map[string]*Projection{},
 	}
 }
 
@@ -25,12 +25,12 @@ func (r *Runtime) Register(source, name string) error {
 		return ErrProjectionExist
 	}
 
-	ctx, err := NewContext(source, name)
+	p, err := NewProjection(source, name)
 	if err != nil {
 		return err
 	}
 
-	r.projections[name] = ctx
+	r.projections[name] = p
 	return nil
 }
 
@@ -112,17 +112,26 @@ func (s *SelectorOptions) Matches(e *model.Event) bool {
 	return false
 }
 
-type Context struct {
+type Projection struct {
 	runtime *goja.Runtime
+
+	Name    string
 	Options Options
 	Output  bool
 
 	selector    SelectorOptions
 	partitionBy PartitionFunc
-	UpdateFunc  ProjectionFunc
+	updateFunc  ProjectionFunc
 }
 
-func (p *Context) options(opts Options) {
+func (p *Projection) ResultStream() string {
+	if p.Options.ResultStream != "" {
+		return p.Options.ResultStream
+	}
+	return fmt.Sprintf("$projections-%s-result", p.Name)
+}
+
+func (p *Projection) options(opts Options) {
 	p.Options = opts
 }
 
@@ -144,7 +153,7 @@ func (f gojaFunc) Call(vm *goja.Runtime, values ...any) any {
 }
 
 type when struct {
-	ctx *Context
+	p *Projection
 }
 
 func (w *when) findHandler(handlers map[string]gojaFunc, eventType string) gojaFunc {
@@ -177,36 +186,36 @@ func (w *when) When(handlers map[string]gojaFunc) WhenRes {
 
 	partitions := Partitions{}
 
-	w.ctx.UpdateFunc = w.ctx.UpdateFunc.Chain(func(_ any, e Event) (any, bool) {
-		if w.ctx.partitionBy != nil {
-			p := w.ctx.partitionBy(e)
+	w.p.updateFunc = w.p.updateFunc.Chain(func(_ any, e Event) (any, bool) {
+		if w.p.partitionBy != nil {
+			p := w.p.partitionBy(e)
 			currState = partitions.get(p)
 			e.Partition = p
 		}
 
 		if !currState.init {
 			init := handlers[initFunc]
-			currState.value = init.Call(w.ctx.runtime)
+			currState.value = init.Call(w.p.runtime)
 			currState.init = true
 		}
 
 		handlerFunc := w.findHandler(handlers, e.Type)
 		if handlerFunc != nil {
-			handlerFunc.Call(w.ctx.runtime, currState.value, e)
+			handlerFunc.Call(w.p.runtime, currState.value, e)
 		}
 		return currState.value, true
 	})
 
 	return WhenRes{
-		transformBy: transformBy{ctx: w.ctx},
-		filterBy:    filterBy{ctx: w.ctx},
-		outputTo:    outputTo{ctx: w.ctx},
-		outputState: outputState{ctx: w.ctx},
+		transformBy: transformBy{p: w.p},
+		filterBy:    filterBy{p: w.p},
+		outputTo:    outputTo{p: w.p},
+		outputState: outputState{p: w.p},
 	}
 }
 
 type transformBy struct {
-	ctx *Context
+	p *Projection
 }
 
 type TransformByRes struct {
@@ -217,21 +226,21 @@ type TransformByRes struct {
 }
 
 func (t *transformBy) TransformBy(transformFunc gojaFunc) TransformByRes {
-	t.ctx.UpdateFunc = t.ctx.UpdateFunc.Chain(func(state any, e Event) (any, bool) {
-		out := transformFunc.Call(t.ctx.runtime, state)
+	t.p.updateFunc = t.p.updateFunc.Chain(func(state any, e Event) (any, bool) {
+		out := transformFunc.Call(t.p.runtime, state)
 		return out, true
 	})
 
 	return TransformByRes{
-		transformBy: transformBy{ctx: t.ctx},
-		filterBy:    filterBy{ctx: t.ctx},
-		outputTo:    outputTo{ctx: t.ctx},
-		outputState: outputState{ctx: t.ctx},
+		transformBy: transformBy{p: t.p},
+		filterBy:    filterBy{p: t.p},
+		outputTo:    outputTo{p: t.p},
+		outputState: outputState{p: t.p},
 	}
 }
 
 type filterBy struct {
-	ctx *Context
+	p *Projection
 }
 
 type FilterByRes struct {
@@ -242,8 +251,8 @@ type FilterByRes struct {
 }
 
 func (t *filterBy) FilterBy(filterFunc gojaFunc) FilterByRes {
-	t.ctx.UpdateFunc = t.ctx.UpdateFunc.Chain(func(state any, e Event) (any, bool) {
-		forward, _ := filterFunc.Call(t.ctx.runtime, state).(bool)
+	t.p.updateFunc = t.p.updateFunc.Chain(func(state any, e Event) (any, bool) {
+		forward, _ := filterFunc.Call(t.p.runtime, state).(bool)
 		if forward {
 			return state, forward
 		}
@@ -251,10 +260,10 @@ func (t *filterBy) FilterBy(filterFunc gojaFunc) FilterByRes {
 	})
 
 	return FilterByRes{
-		transformBy: transformBy{ctx: t.ctx},
-		filterBy:    filterBy{ctx: t.ctx},
-		outputTo:    outputTo{ctx: t.ctx},
-		outputState: outputState{ctx: t.ctx},
+		transformBy: transformBy{p: t.p},
+		filterBy:    filterBy{p: t.p},
+		outputTo:    outputTo{p: t.p},
+		outputState: outputState{p: t.p},
 	}
 }
 
@@ -266,7 +275,7 @@ type WhenRes struct {
 }
 
 type partitionBy struct {
-	ctx *Context
+	p *Projection
 }
 
 type PartitionByRes struct {
@@ -274,17 +283,17 @@ type PartitionByRes struct {
 }
 
 func (p *partitionBy) PartitionBy(partitionFunc gojaFunc) PartitionByRes {
-	p.ctx.partitionBy = func(e Event) string {
-		partition, _ := partitionFunc.Call(p.ctx.runtime, e).(string)
+	p.p.partitionBy = func(e Event) string {
+		partition, _ := partitionFunc.Call(p.p.runtime, e).(string)
 		return partition
 	}
 	return PartitionByRes{
-		when: when{ctx: p.ctx},
+		when: when{p: p.p},
 	}
 }
 
 type foreachStream struct {
-	ctx *Context
+	p *Projection
 }
 
 type ForeachStreamRes struct {
@@ -292,12 +301,12 @@ type ForeachStreamRes struct {
 }
 
 func (fe *foreachStream) ForeachStream() ForeachStreamRes {
-	fe.ctx.partitionBy = func(e Event) string {
+	fe.p.partitionBy = func(e Event) string {
 		return e.StreamId
 	}
 
 	return ForeachStreamRes{
-		when: when{ctx: fe.ctx},
+		when: when{p: fe.p},
 	}
 }
 
@@ -319,7 +328,7 @@ type FromStreamsMatchingRes struct {
 }
 
 type outputState struct {
-	ctx *Context
+	p *Projection
 }
 
 type OutputStateRes struct {
@@ -330,61 +339,62 @@ type OutputStateRes struct {
 
 // If the projection maintains state, setting this option produces a stream called $projections-{projection-name}-result with the state as the event body.
 func (o *outputState) OutputState() OutputStateRes {
-	o.ctx.Output = true
+	o.p.Output = true
 
 	return OutputStateRes{
-		transformBy: transformBy{ctx: o.ctx},
-		filterBy:    filterBy{ctx: o.ctx},
-		outputTo:    outputTo{ctx: o.ctx},
+		transformBy: transformBy{p: o.p},
+		filterBy:    filterBy{p: o.p},
+		outputTo:    outputTo{p: o.p},
 	}
 }
 
 type outputTo struct {
-	ctx *Context
+	p *Projection
 }
 
 func (o *outputTo) OutputTo(stream string) {
 }
 
-func (ctx *Context) fromStreams(stream ...string) FromStreamsRes {
-	ctx.selector = SelectorOptions{
+func (p *Projection) fromStreams(stream ...string) FromStreamsRes {
+	p.selector = SelectorOptions{
 		Kind:    SelectorKindStream,
 		Streams: stream,
 	}
 
 	return FromStreamsRes{
-		when:        when{ctx: ctx},
-		partitionBy: partitionBy{ctx: ctx},
-		outputState: outputState{ctx: ctx},
+		when:        when{p: p},
+		partitionBy: partitionBy{p: p},
+		outputState: outputState{p: p},
 	}
 }
 
-func (ctx *Context) fromStream(stream string) FromStreamsRes {
-	return ctx.fromStreams(stream)
+func (p *Projection) fromStream(stream string) FromStreamsRes {
+	return p.fromStreams(stream)
 }
 
-func (ctx *Context) fromAll() FromAllRes {
+func (p *Projection) fromAll() FromAllRes {
 	return FromAllRes{
-		partitionBy:   partitionBy{ctx: ctx},
-		foreachStream: foreachStream{ctx: ctx},
-		when:          when{ctx: ctx},
-		outputState:   outputState{ctx: ctx},
+		partitionBy:   partitionBy{p: p},
+		foreachStream: foreachStream{p: p},
+		when:          when{p: p},
+		outputState:   outputState{p: p},
 	}
 }
 
-func NewContext(source, name string) (*Context, error) {
-	ctx := &Context{
+func NewProjection(source, name string) (*Projection, error) {
+	p := &Projection{
 		runtime:    goja.New(),
-		UpdateFunc: func(state any, e Event) (any, bool) { return nil, true },
+		Name:       name,
+		updateFunc: func(state any, e Event) (any, bool) { return nil, true },
 	}
-	ctx.setup()
+	p.setup()
 
-	_, err := ctx.runtime.RunString(source)
-	return ctx, err
+	_, err := p.runtime.RunString(source)
+	return p, err
 }
 
-func (ctx *Context) Update(e Event) (any, bool) {
-	return ctx.UpdateFunc(nil, e)
+func (p *Projection) Update(e Event) (any, bool) {
+	return p.updateFunc(nil, e)
 }
 
 func panicIfErr(err error) {
@@ -393,32 +403,32 @@ func panicIfErr(err error) {
 	}
 }
 
-func (ctx *Context) setupRuntime() {
-	ctx.runtime.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
+func (p *Projection) setupRuntime() {
+	p.runtime.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 }
 
-func (ctx *Context) setup() {
-	ctx.setupRuntime()
-	ctx.setupHandlers()
+func (p *Projection) setup() {
+	p.setupRuntime()
+	p.setupHandlers()
 }
 
 func debug(a ...any) {
 	fmt.Println(a...)
 }
 
-func (ctx *Context) setupHandlers() {
-	err := ctx.runtime.Set("options", ctx.options)
+func (p *Projection) setupHandlers() {
+	err := p.runtime.Set("options", p.options)
 	panicIfErr(err)
 
-	err = ctx.runtime.Set("fromAll", ctx.fromAll)
+	err = p.runtime.Set("fromAll", p.fromAll)
 	panicIfErr(err)
 
-	err = ctx.runtime.Set("fromStream", ctx.fromStream)
+	err = p.runtime.Set("fromStream", p.fromStream)
 	panicIfErr(err)
 
-	err = ctx.runtime.Set("fromStreams", ctx.fromStreams)
+	err = p.runtime.Set("fromStreams", p.fromStreams)
 	panicIfErr(err)
 
-	err = ctx.runtime.Set("debug", debug)
+	err = p.runtime.Set("debug", debug)
 	panicIfErr(err)
 }
