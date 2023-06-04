@@ -28,7 +28,7 @@ type StreamService interface {
 
 type Subscription struct {
 	Stream   string
-	NotifyCh chan *model.Event
+	NotifyCh chan int64
 }
 
 type StreamInfo struct {
@@ -37,10 +37,12 @@ type StreamInfo struct {
 }
 
 type streamService struct {
-	mtx     sync.RWMutex
-	streams map[string]int64
+	mtx                 sync.RWMutex
+	streams             map[string]int64
+	streamSubscriptions map[string][]Subscription
 
 	db *sql.DB
+	b  *backend.Backend
 }
 
 func (s *streamService) fetchRevision(name string) (int64, error) {
@@ -53,8 +55,7 @@ func (s *streamService) fetchRevision(name string) (int64, error) {
 	}
 	s.mtx.RUnlock()
 
-	r := backend.NewBackend(s.db)
-	dbRevision, err := r.StreamRevision(name)
+	dbRevision, err := s.b.StreamRevision(name)
 	if errors.Is(err, backend.ErrStreamNotExist) {
 		revision = -1
 		err = nil
@@ -105,7 +106,7 @@ func (s *streamService) newBackend() (*sql.Tx, *backend.Backend, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return tx, backend.NewBackend(tx), nil
+	return tx, s.b.WithTx(tx), nil
 }
 
 func (s *streamService) append(ctx context.Context, backend *backend.Backend, name string, stream model.EventStream, opts model.AppendOptions) (model.AppendResult, error) {
@@ -169,6 +170,7 @@ func (s *streamService) Append(ctx context.Context, name string, stream model.Ev
 			return res, err
 		}
 		s.updateStreamRevision(name, int64(res.Revision))
+		s.notifySubscriptions(name, int64(res.Revision))
 	}
 	return res, err
 }
@@ -194,41 +196,132 @@ const (
 )
 
 func (s *streamService) Read(ctx context.Context, onEvent func(*model.Event) error, opts model.ReadOptions) error {
-	r := backend.NewBackend(s.db)
-	return r.ReadStream(ctx, opts, onEvent)
+	return s.b.ReadStream(ctx, opts, onEvent)
 }
 
 func (s *streamService) Subscribe(ctx context.Context, onEvent func(*model.Event) error, opts model.ReadOptions) error {
-	r := backend.NewBackend(s.db)
-	ch, err := r.Subscribe(ctx, opts, false)
-	if err != nil {
-		return err
+	isAll := opts.AllOptions != nil
+
+	ch := make(chan int64, 100)
+	s.addSubscription(Subscription{
+		Stream:   opts.StreamOptions.Identifier,
+		NotifyCh: ch,
+	})
+	defer s.removeSubscription(opts.StreamOptions.Identifier)
+
+	var lastPositionOrRevision int64 = -1
+	updateLastPositionOrRevision := func(e *model.Event) {
+		if isAll {
+			lastPositionOrRevision = int64(e.GlobalPosition)
+		} else {
+			lastPositionOrRevision = int64(e.StreamRevision)
+		}
 	}
 
-	if err := s.Read(ctx, onEvent, opts); err != nil {
+	if err := s.Read(ctx, func(e *model.Event) error {
+		onEvent(e)
+		updateLastPositionOrRevision(e)
+		return nil
+	}, opts); err != nil {
 		return err
 	}
 
 	for {
-		e := <-ch
-		if e == nil {
+		positionOrRevision := <-ch
+		if positionOrRevision < 0 {
 			return io.EOF
 		}
 
-		if err := onEvent(e); err != nil {
+		if lastPositionOrRevision >= positionOrRevision {
+			continue
+		}
+
+		o := model.ReadOptions{
+			Direction: model.DirectionForwards,
+			Count:     positionOrRevision - lastPositionOrRevision,
+		}
+
+		if isAll {
+			o.AllOptions = &model.AllOptions{
+				Filter:          o.AllOptions.Filter,
+				Kind:            model.ReadAllKindPosition,
+				PreparePosition: uint64(lastPositionOrRevision + 1),
+				CommitPosition:  uint64(lastPositionOrRevision + 1),
+			}
+		} else {
+			o.StreamOptions = &model.StreamOptions{
+				Identifier:   opts.StreamOptions.Identifier,
+				RevisionKind: model.RevisionReadKindRevision,
+				Revision:     uint64(lastPositionOrRevision + 1),
+			}
+		}
+
+		if lastPositionOrRevision < 0 {
+			o.Count = 1
+		}
+
+		err := s.Read(ctx, func(e *model.Event) error {
+			onEvent(e)
+			updateLastPositionOrRevision(e)
+			return nil
+		}, o)
+		if err != nil {
 			return err
 		}
 	}
 }
 
+func (s *streamService) addSubscription(sub Subscription) {
+	s.mtx.Lock()
+	s.streamSubscriptions[sub.Stream] = append(s.streamSubscriptions[sub.Stream], sub)
+	s.mtx.Unlock()
+}
+
+func (s *streamService) findSubscription(stream string) int {
+	for i, sub := range s.streamSubscriptions[stream] {
+		if sub.Stream == stream {
+			return i
+		}
+	}
+	return -1
+}
+
+func (s *streamService) removeSubscription(stream string) {
+	var sub *Subscription
+	s.mtx.Lock()
+	if idx := s.findSubscription(stream); idx >= 0 {
+		sub = &s.streamSubscriptions[stream][idx]
+		s.streamSubscriptions[stream][idx] = s.streamSubscriptions[stream][0]
+		s.streamSubscriptions[stream] = s.streamSubscriptions[stream][1:]
+	}
+	s.mtx.Unlock()
+
+	if sub != nil {
+		close(sub.NotifyCh)
+	}
+}
+
+func (s *streamService) notifySubscriptions(stream string, revision int64) {
+	s.mtx.RLock()
+	for _, subscription := range s.streamSubscriptions[stream] {
+		select {
+		case subscription.NotifyCh <- revision:
+
+		default:
+		}
+	}
+	s.mtx.RUnlock()
+}
+
 func NewSteamsService(db *sql.DB) StreamService {
 	s := &streamService{
-		streams: make(map[string]int64),
-		db:      db,
+		streams:             make(map[string]int64),
+		streamSubscriptions: make(map[string][]Subscription),
+		db:                  db,
+		b:                   backend.NewBackend(db),
 	}
 
-	r := backend.NewBackend(db)
-	if err := r.Init(); err != nil {
+	if err := s.b.Init(); err != nil {
 		log.Fatal(err)
 	}
 	return s

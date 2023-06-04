@@ -23,7 +23,8 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	db := openDB()
+	connString := connectionString(address, user, port, password, db)
+	db := openDB(connString)
 	server := grpc.NewServer()
 
 	serverfeatures.RegisterServerFeaturesServer(server, serverfeatures.NewServerFeatures())
@@ -40,8 +41,8 @@ const (
 	db       = "eventstorm"
 )
 
-func openDB() *sql.DB {
-	db, err := sql.Open("postgres", connectionString(address, user, port, password, db))
+func openDB(connectionString string) *sql.DB {
+	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
 		log.Fatal(err)
 	}

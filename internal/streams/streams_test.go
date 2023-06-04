@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/docker/go-connections/nat"
@@ -346,6 +347,45 @@ func (s *ServiceSuite) TestReadAllFilterByEventType() {
 
 func (s *ServiceSuite) TestReadAllFilterByContentType() {
 
+}
+
+func (s *ServiceSuite) TestStreamSubscription() {
+	s.createStreamWithEvents("test-stream", 10)
+
+	var wg sync.WaitGroup
+	wg.Add(100)
+
+	events := make([]*model.Event, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		err := s.svc.Subscribe(ctx, func(se *model.Event) error {
+			events = append(events, se)
+			wg.Done()
+			return nil
+		}, model.ReadOptions{
+			Direction: model.DirectionForwards,
+			Count:     -1,
+			StreamOptions: &model.StreamOptions{
+				Identifier: "test-stream",
+			},
+		})
+		s.NoError(err)
+	}()
+
+	_, err := s.svc.Append(context.TODO(), "test-stream", &bufferEventStream{Events: genEvents(90)}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
+	s.NoError(err)
+
+	wg.Wait()
+
+	cancel()
+
+	s.Len(events, 100)
+
+	for i, e := range events {
+		s.Equal(e.StreamIdentifier, "test-stream")
+		s.Equal(e.StreamRevision, uint64(i))
+	}
 }
 
 func (s *ServiceSuite) readEvents(opts model.ReadOptions) ([]*model.Event, error) {

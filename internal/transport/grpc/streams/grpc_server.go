@@ -66,7 +66,6 @@ func (s *grpcServer) Read(req *ReadReq, server Streams_ReadServer) error {
 	}
 
 	// handle stream not found
-
 	if !opts.IsSubscription() {
 		return s.svc.Read(server.Context(), func(e *model.Event) error {
 			return server.Send(&ReadResp{
