@@ -424,6 +424,61 @@ func (s *ServiceSuite) TestFilterEventTypeByRegex() {
 	s.Len(readEvents, 3)
 }
 
+func (s *ServiceSuite) TestFilterStreamIdentifierByPrefix() {
+	for i := 0; i < 100; i++ {
+		s.createStreamWithEvents(fmt.Sprintf("stream-%d", i), &bufferEventStream{Events: genEvents(1)})
+	}
+
+	opts := readAllOptsStart(model.DirectionForwards, 100)
+	opts.AllOptions.Filter = model.FilterOptions{
+		Kind: model.FilterKindStreamIdentifier,
+		Expr: model.FilterExpression{
+			Prefix: []string{
+				"stream-0", "stream-1", "stream-2",
+			},
+		},
+	}
+
+	readEvents := make([]*model.Event, 0)
+	err := s.svc.Read(context.Background(), func(e *model.Event) error {
+		readEvents = append(readEvents, e)
+		return nil
+	}, opts)
+	s.NoError(err)
+
+	s.Len(readEvents, 23)
+
+	for _, e := range readEvents {
+		id := e.StreamIdentifier
+		s.True(strings.HasPrefix(id, "stream-0") ||
+			strings.HasPrefix(id, "stream-1") ||
+			strings.HasPrefix(id, "stream-2"))
+	}
+}
+
+func (s *ServiceSuite) TestFilterStreamIdentifierByRegex() {
+	for i := 0; i < 100; i++ {
+		s.createStreamWithEvents(fmt.Sprintf("stream-%d", i), &bufferEventStream{Events: genEvents(1)})
+	}
+
+	opts := readAllOptsStart(model.DirectionForwards, 100)
+	opts.AllOptions.Filter = model.FilterOptions{
+		Kind: model.FilterKindStreamIdentifier,
+		Expr: model.FilterExpression{
+			Regex: "^(stream-0|stream-1|stream-2)$",
+		},
+	}
+
+	readEvents := make([]*model.Event, 0)
+	err := s.svc.Read(context.Background(), func(e *model.Event) error {
+		readEvents = append(readEvents, e)
+		return nil
+	}, opts)
+	s.NoError(err)
+
+	s.Len(readEvents, 3)
+}
+
 func (s *ServiceSuite) TestStreamSubscription() {
 	s.createStreamWithEvents("test-stream", &bufferEventStream{Events: genEvents(10)})
 

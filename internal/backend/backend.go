@@ -179,10 +179,10 @@ func buildAllQuery(opts model.ReadOptions) *Query {
 
 	filter := opts.AllOptions.Filter
 	switch filter.Kind {
+	case model.FilterKindStreamIdentifier:
+		conditions = append(conditions, buildFilter("stream", filter.Expr))
 	case model.FilterKindEventType:
 		conditions = append(conditions, buildFilter("metadata->>'type'", filter.Expr))
-	case model.FilterKindStreamIdentifier:
-		conditions = append(conditions, buildFilter("metadata->>'content-type'", filter.Expr))
 	}
 
 	return &Query{
