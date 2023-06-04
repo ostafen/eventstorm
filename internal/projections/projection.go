@@ -68,7 +68,7 @@ func NewEvent(e model.Event) Event {
 		SequenceNumber: -1, // ???
 		MetadataRaw:    e.Metadata,
 		Partition:      "",
-		Type:           e.EventType(),
+		Type:           e.Metadata.EventType(),
 		StreamId:       e.StreamIdentifier,
 	}
 }

@@ -7,6 +7,22 @@ import (
 
 type Metadata map[string]string
 
+func (m Metadata) ContentType() string {
+	return m[ContentTypeMetadata]
+}
+
+func (m Metadata) SetContentType(eventType string) {
+	m[ContentTypeMetadata] = eventType
+}
+
+func (m Metadata) EventType() string {
+	return m[EventTypeMetadata]
+}
+
+func (m Metadata) SetEventType(eventType string) {
+	m[EventTypeMetadata] = eventType
+}
+
 type Event struct {
 	UUID             string
 	StreamIdentifier string
@@ -25,10 +41,6 @@ const (
 
 func (e *Event) IsJson() bool {
 	return e.Metadata[ContentTypeMetadata] == ContentTypeJson
-}
-
-func (e *Event) EventType() string {
-	return e.Metadata[EventTypeMetadata]
 }
 
 func (e *Event) Json() map[string]any {

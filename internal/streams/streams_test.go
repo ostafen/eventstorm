@@ -119,7 +119,6 @@ func genEvents(n int) []*model.Event {
 			Data:           nil,
 		})
 	}
-
 	return events
 }
 
@@ -155,7 +154,7 @@ func (s *ServiceSuite) TestAppendToNonExistentStream() {
 func (s *ServiceSuite) TestAppendToExistentStream() {
 	ctx := context.TODO()
 
-	res := s.createStreamWithEvents("test-stream", 10)
+	res := s.createStreamWithEvents("test-stream", &bufferEventStream{Events: genEvents(10)})
 	s.Equal(res, model.AppendResult{Revision: 9, PreparePosition: 1, CommitPosition: 1})
 
 	res, err := s.svc.Append(ctx, "test-stream", &bufferEventStream{Events: genEvents(1)}, model.AppendOptions{Kind: model.RevisionAppendKindExist})
@@ -172,8 +171,8 @@ func (s *ServiceSuite) TestAppendToExistentStream() {
 	s.Error(err, streams.ErrInvalidStreamRevision)
 }
 
-func (s *ServiceSuite) createStreamWithEvents(stream string, n int) model.AppendResult {
-	res, err := s.svc.Append(context.TODO(), stream, &bufferEventStream{Events: genEvents(n)}, model.AppendOptions{Kind: model.RevisionAppendKindNoStream})
+func (s *ServiceSuite) createStreamWithEvents(name string, stream model.EventStream) model.AppendResult {
+	res, err := s.svc.Append(context.TODO(), name, stream, model.AppendOptions{Kind: model.RevisionAppendKindNoStream})
 	s.NoError(err)
 	return res
 }
@@ -234,7 +233,7 @@ func (s *ServiceSuite) TestReadNonExistentStream() {
 }
 
 func (s *ServiceSuite) TestReadStreamForwards() {
-	res := s.createStreamWithEvents("test-stream", 100)
+	res := s.createStreamWithEvents("test-stream", &bufferEventStream{Events: genEvents(100)})
 	s.Equal(res, model.AppendResult{Revision: 99, PreparePosition: 1, CommitPosition: 1})
 
 	opts := readStreamOptsStart("test-stream", model.DirectionForwards, 10)
@@ -269,7 +268,7 @@ func (s *ServiceSuite) TestReadStreamForwards() {
 }
 
 func (s *ServiceSuite) TestReadStreamBackwards() {
-	res := s.createStreamWithEvents("test-stream", 100)
+	res := s.createStreamWithEvents("test-stream", &bufferEventStream{Events: genEvents(100)})
 	s.Equal(res, model.AppendResult{Revision: 99, PreparePosition: 1, CommitPosition: 1})
 
 	opts := readStreamOptsStart("test-stream", model.DirectionBackwards, 10)
@@ -305,7 +304,7 @@ func (s *ServiceSuite) TestReadStreamBackwards() {
 
 func (s *ServiceSuite) TestReadAllFromStart() {
 	for i := 0; i < 100; i++ {
-		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), 1)
+		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), &bufferEventStream{Events: genEvents(1)})
 		s.Equal(res, model.AppendResult{Revision: 0, PreparePosition: uint64(i + 1), CommitPosition: uint64(i + 1)})
 	}
 
@@ -322,7 +321,7 @@ func (s *ServiceSuite) TestReadAllFromStart() {
 
 func (s *ServiceSuite) TestReadAllFromEnd() {
 	for i := 0; i < 100; i++ {
-		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), 1)
+		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), &bufferEventStream{Events: genEvents(1)})
 		s.Equal(res, model.AppendResult{Revision: 0, PreparePosition: uint64(i + 1), CommitPosition: uint64(i + 1)})
 	}
 
@@ -339,7 +338,7 @@ func (s *ServiceSuite) TestReadAllFromEnd() {
 
 func (s *ServiceSuite) TestReadAllFromPosition() {
 	for i := 0; i < 100; i++ {
-		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), 1)
+		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), &bufferEventStream{Events: genEvents(1)})
 		s.Equal(res, model.AppendResult{Revision: 0, PreparePosition: uint64(i + 1), CommitPosition: uint64(i + 1)})
 	}
 
@@ -352,18 +351,81 @@ func (s *ServiceSuite) TestReadAllFromPosition() {
 		s.Equal(e.StreamRevision, uint64(0))
 		s.Equal(e.GlobalPosition, uint64(50-i))
 	}
+
+	events, err = s.readEvents(readAllOpts(model.DirectionForwards, 51, 100))
+	s.NoError(err)
+	s.Len(events, 50)
+
+	for i, e := range events {
+		s.Equal(e.StreamIdentifier, fmt.Sprintf("test-stream-%d", 50+i))
+		s.Equal(e.StreamRevision, uint64(0))
+		s.Equal(e.GlobalPosition, uint64(51+i))
+	}
 }
 
-func (s *ServiceSuite) TestReadAllFilterByEventType() {
+func (s *ServiceSuite) TestFilterEventTypeByPrefix() {
+	events := genEvents(100)
+	for i, e := range events {
+		e.Metadata.SetEventType(fmt.Sprintf("type-%d", i))
+	}
+	_, err := s.svc.Append(context.Background(), "test-stream", &bufferEventStream{Events: events}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
+	s.NoError(err)
 
+	opts := readAllOptsStart(model.DirectionForwards, 100)
+	opts.AllOptions.Filter = model.FilterOptions{
+		Kind: model.FilterKindEventType,
+		Expr: model.FilterExpression{
+			Prefix: []string{
+				"type-0", "type-1", "type-5",
+			},
+		},
+	}
+
+	readEvents := make([]*model.Event, 0)
+	err = s.svc.Read(context.Background(), func(e *model.Event) error {
+		readEvents = append(readEvents, e)
+		return nil
+	}, opts)
+	s.NoError(err)
+
+	s.Len(readEvents, 23)
+
+	for _, e := range readEvents {
+		et := e.Metadata.EventType()
+		s.True(strings.HasPrefix(et, "type-0") ||
+			strings.HasPrefix(et, "type-1") ||
+			strings.HasPrefix(et, "type-5"))
+	}
 }
 
-func (s *ServiceSuite) TestReadAllFilterByContentType() {
+func (s *ServiceSuite) TestFilterEventTypeByRegex() {
+	events := genEvents(100)
+	for i, e := range events {
+		e.Metadata.SetEventType(fmt.Sprintf("type-%d", i))
+	}
+	_, err := s.svc.Append(context.Background(), "test-stream", &bufferEventStream{Events: events}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
+	s.NoError(err)
 
+	opts := readAllOptsStart(model.DirectionForwards, 100)
+	opts.AllOptions.Filter = model.FilterOptions{
+		Kind: model.FilterKindEventType,
+		Expr: model.FilterExpression{
+			Regex: "^(type-0|type-1|type-2)$",
+		},
+	}
+
+	readEvents := make([]*model.Event, 0)
+	err = s.svc.Read(context.Background(), func(e *model.Event) error {
+		readEvents = append(readEvents, e)
+		return nil
+	}, opts)
+	s.NoError(err)
+
+	s.Len(readEvents, 3)
 }
 
 func (s *ServiceSuite) TestStreamSubscription() {
-	s.createStreamWithEvents("test-stream", 10)
+	s.createStreamWithEvents("test-stream", &bufferEventStream{Events: genEvents(10)})
 
 	var wg sync.WaitGroup
 	wg.Add(100)
