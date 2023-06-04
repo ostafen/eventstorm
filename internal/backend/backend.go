@@ -171,6 +171,9 @@ func buildAllQuery(opts model.ReadOptions) *Query {
 			limit = 1
 		}
 	case model.ReadAllKindPosition:
+		if opts.Direction == model.DirectionBackwards {
+			sort = SortDirectionDesc
+		}
 		conditions = append(conditions, fmt.Sprintf("position %s %d", sort.Operator(), opts.AllOptions.CommitPosition))
 	}
 

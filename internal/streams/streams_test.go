@@ -338,7 +338,20 @@ func (s *ServiceSuite) TestReadAllFromEnd() {
 }
 
 func (s *ServiceSuite) TestReadAllFromPosition() {
+	for i := 0; i < 100; i++ {
+		res := s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), 1)
+		s.Equal(res, model.AppendResult{Revision: 0, PreparePosition: uint64(i + 1), CommitPosition: uint64(i + 1)})
+	}
 
+	events, err := s.readEvents(readAllOpts(model.DirectionBackwards, 50, 100))
+	s.NoError(err)
+	s.Len(events, 50)
+
+	for i, e := range events {
+		s.Equal(e.StreamIdentifier, fmt.Sprintf("test-stream-%d", 50-i-1))
+		s.Equal(e.StreamRevision, uint64(0))
+		s.Equal(e.GlobalPosition, uint64(50-i))
+	}
 }
 
 func (s *ServiceSuite) TestReadAllFilterByEventType() {
