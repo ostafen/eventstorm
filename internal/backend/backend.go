@@ -230,7 +230,7 @@ func buildPrefixRegex(prefixes []string) string {
 	for i, prefix := range prefixes {
 		regex += prefix
 
-		if i < len(prefix)-1 {
+		if i < len(prefixes)-1 {
 			regex += "|"
 		}
 	}
