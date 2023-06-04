@@ -89,7 +89,7 @@ func (r *Backend) StreamRevision(stream string) (uint64, error) {
 	var revision uint64
 	err := row.Scan(&revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrStreamNotExist
+		return 0, ErrNoRows
 	}
 	return revision, convertError(err)
 }
@@ -268,7 +268,7 @@ func (r *Backend) ReadStream(ctx context.Context, opts model.ReadOptions, onEven
 	}
 
 	if !hasNext {
-		return ErrStreamNotExist
+		return ErrNoRows
 	}
 	return nil
 }
@@ -309,11 +309,15 @@ func (b *Backend) GetProjectionByName(ctx context.Context, name string) (string,
 }
 
 var (
-	ErrConflict       = errors.New("conflict")
-	ErrStreamNotExist = errors.New("stream not found")
+	ErrConflict = errors.New("conflict")
+	ErrNoRows   = errors.New("no rows in result set")
 )
 
 func convertError(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNoRows
+	}
+
 	switch e := err.(type) {
 	case *pq.Error:
 		switch e.Code {

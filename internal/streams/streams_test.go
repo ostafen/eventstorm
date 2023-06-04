@@ -228,7 +228,7 @@ func readAllOptsEnd(direction model.Direction, count uint64) model.ReadOptions {
 func (s *ServiceSuite) TestReadNonExistentStream() {
 	opts := readStreamOptsStart("test-stream", model.DirectionForwards, 10)
 	events, err := s.readEvents(opts)
-	s.Error(err, backend.ErrStreamNotExist)
+	s.Error(err, backend.ErrNoRows)
 	s.Len(events, 0)
 }
 

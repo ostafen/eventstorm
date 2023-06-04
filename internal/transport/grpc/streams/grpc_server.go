@@ -64,20 +64,35 @@ func (s *grpcServer) Read(req *ReadReq, server Streams_ReadServer) error {
 		return err
 	}
 
-	// TODO: properly handle stream not found
-	if !opts.IsSubscription() {
-		return s.svc.Read(server.Context(), func(e *model.Event) error {
-			return s.sendEvent(server, e)
-		}, opts)
+	if opts.IsSubscription() {
+		return s.handleSubscriptionRequest(server, opts)
 	}
+	return s.handleReadRequest(server, opts)
+}
 
+func (s *grpcServer) handleReadRequest(server Streams_ReadServer, opts model.ReadOptions) error {
+	err := s.svc.Read(server.Context(), func(e *model.Event) error {
+		return s.sendEvent(server, e)
+	}, opts)
+
+	if errors.Is(err, streams.ErrStreamNotExist) {
+		return s.sendStreamNotFound(server, opts.StreamOptions.Identifier)
+	}
+	return err
+}
+
+const (
+	checkpointMod = 32
+)
+
+func (s *grpcServer) handleSubscriptionRequest(server Streams_ReadServer, opts model.ReadOptions) error {
 	if err := s.sendSubscriptionConfirmation(server); err != nil {
 		return err
 	}
 
 	nSent := 0
 	return s.svc.Subscribe(server.Context(), func(e *model.Event) error {
-		if nSent%checkpoint == 0 {
+		if nSent%checkpointMod == 0 {
 			if err := s.sendSubscriptionCheckpoint(server, e.GlobalPosition); err != nil {
 				return err
 			}
@@ -85,6 +100,18 @@ func (s *grpcServer) Read(req *ReadReq, server Streams_ReadServer) error {
 		nSent++
 		return s.sendEvent(server, e)
 	}, opts)
+}
+
+func (s *grpcServer) sendStreamNotFound(server Streams_ReadServer, stream string) error {
+	return server.Send(&ReadResp{
+		Content: &ReadResp_StreamNotFound_{
+			StreamNotFound: &ReadResp_StreamNotFound{
+				StreamIdentifier: &shared.StreamIdentifier{
+					StreamName: []byte(stream),
+				},
+			},
+		},
+	})
 }
 
 func (s *grpcServer) sendSubscriptionConfirmation(server Streams_ReadServer) error {
@@ -130,10 +157,6 @@ func (s *grpcServer) sendEvent(server Streams_ReadServer, e *model.Event) error 
 		},
 	})
 }
-
-const (
-	checkpoint = 32
-)
 
 func (s *grpcServer) Append(server Streams_AppendServer) error {
 	req, err := server.Recv()

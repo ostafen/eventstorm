@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	ErrStreamNotExist        = errors.New("stream not exist")
 	ErrInvalidStreamRevision = errors.New("invalid stream revision")
 	ErrNoContentTypeMetadata = errors.New("missing content-type metdata")
 	ErrNoEventTypeMetadata   = errors.New("missing event-type metdata")
@@ -45,7 +46,7 @@ type streamService struct {
 	b  *backend.Backend
 }
 
-func (s *streamService) fetchRevision(name string) (int64, error) {
+func (s *streamService) getRevision(name string) (int64, error) {
 	s.mtx.RLock()
 
 	revision, has := s.streams[name]
@@ -56,7 +57,7 @@ func (s *streamService) fetchRevision(name string) (int64, error) {
 	s.mtx.RUnlock()
 
 	dbRevision, err := s.b.StreamRevision(name)
-	if errors.Is(err, backend.ErrStreamNotExist) {
+	if errors.Is(err, backend.ErrNoRows) {
 		revision = -1
 		err = nil
 	} else {
@@ -78,7 +79,7 @@ func (s *streamService) fetchRevision(name string) (int64, error) {
 }
 
 func (s *streamService) checkRevision(name string, opts model.AppendOptions) (int64, error) {
-	revision, err := s.fetchRevision(name)
+	revision, err := s.getRevision(name)
 	if err != nil {
 		return -1, err
 	}
@@ -196,6 +197,15 @@ const (
 )
 
 func (s *streamService) Read(ctx context.Context, onEvent func(*model.Event) error, opts model.ReadOptions) error {
+	if opts.StreamOptions != nil {
+		revision, err := s.getRevision(opts.StreamOptions.Identifier)
+		if err != nil {
+			return err
+		}
+		if revision < 0 {
+			return ErrStreamNotExist
+		}
+	}
 	return s.b.ReadStream(ctx, opts, onEvent)
 }
 
