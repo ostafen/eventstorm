@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/gofrs/uuid"
 	"github.com/ostafen/eventstorm/internal/model"
@@ -65,37 +64,76 @@ func (s *grpcServer) Read(req *ReadReq, server Streams_ReadServer) error {
 		return err
 	}
 
-	// handle stream not found
+	// TODO: properly handle stream not found
 	if !opts.IsSubscription() {
 		return s.svc.Read(server.Context(), func(e *model.Event) error {
-			return server.Send(&ReadResp{
-				Content: &ReadResp_Event{
-					Event: &ReadResp_ReadEvent{
-						Event: &ReadResp_ReadEvent_RecordedEvent{
-							Id:               &shared.UUID{Value: &shared.UUID_String_{String_: e.UUID}},
-							StreamIdentifier: &shared.StreamIdentifier{StreamName: []byte(e.StreamIdentifier)},
-							StreamRevision:   e.StreamRevision,
-							CommitPosition:   e.StreamRevision - 1,
-							PreparePosition:  e.StreamRevision - 1,
-							Metadata:         e.Metadata,
-							CustomMetadata:   e.CustomMetadata,
-							Data:             e.Data,
-						},
-					},
-				},
-			})
+			return s.sendEvent(server, e)
 		}, opts)
 	}
 
-	err = s.svc.Subscribe(server.Context(), func(e *model.Event) error {
-		return nil
-	}, opts)
-
-	if errors.Is(err, io.EOF) {
-		// return subscription dropped with error
+	if err := s.sendSubscriptionConfirmation(server); err != nil {
+		return err
 	}
-	return err
+
+	nSent := 0
+	return s.svc.Subscribe(server.Context(), func(e *model.Event) error {
+		if nSent%checkpoint == 0 {
+			if err := s.sendSubscriptionCheckpoint(server, e.GlobalPosition); err != nil {
+				return err
+			}
+		}
+		nSent++
+		return s.sendEvent(server, e)
+	}, opts)
 }
+
+func (s *grpcServer) sendSubscriptionConfirmation(server Streams_ReadServer) error {
+	subscriptionId, err := uuid.NewV4()
+	if err != nil {
+		return err
+	}
+	return server.Send(&ReadResp{
+		Content: &ReadResp_Confirmation{
+			Confirmation: &ReadResp_SubscriptionConfirmation{
+				SubscriptionId: subscriptionId.String(),
+			},
+		},
+	})
+}
+
+func (s *grpcServer) sendSubscriptionCheckpoint(server Streams_ReadServer, position uint64) error {
+	return server.Send(&ReadResp{
+		Content: &ReadResp_Checkpoint_{
+			Checkpoint: &ReadResp_Checkpoint{
+				PreparePosition: position,
+				CommitPosition:  position,
+			},
+		},
+	})
+}
+
+func (s *grpcServer) sendEvent(server Streams_ReadServer, e *model.Event) error {
+	return server.Send(&ReadResp{
+		Content: &ReadResp_Event{
+			Event: &ReadResp_ReadEvent{
+				Event: &ReadResp_ReadEvent_RecordedEvent{
+					Id:               &shared.UUID{Value: &shared.UUID_String_{String_: e.UUID}},
+					StreamIdentifier: &shared.StreamIdentifier{StreamName: []byte(e.StreamIdentifier)},
+					StreamRevision:   e.StreamRevision,
+					CommitPosition:   e.StreamRevision - 1,
+					PreparePosition:  e.StreamRevision - 1,
+					Metadata:         e.Metadata,
+					CustomMetadata:   e.CustomMetadata,
+					Data:             e.Data,
+				},
+			},
+		},
+	})
+}
+
+const (
+	checkpoint = 32
+)
 
 func (s *grpcServer) Append(server Streams_AppendServer) error {
 	req, err := server.Recv()
