@@ -26,4 +26,8 @@ You should rather use **EventStoreDB** if:
 - you need a distributed database;
 - you have to deal with tremendous write workloads which cannot be handled by PostgreSQL (EventStoreDB makes use of append-only log).
 
- 
+## Contact
+Stefano Scafiti @ostafen
+
+## License
+EventStormDB source code is available under the **MIT License**.
