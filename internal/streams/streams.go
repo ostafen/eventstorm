@@ -239,7 +239,7 @@ func (s *streamService) Subscribe(ctx context.Context, opts model.ReadOptions) (
 	s.addSubscription(subscription)
 
 	go func() {
-		defer s.removeSubscription(opts.StreamOptions.Identifier)
+		defer s.removeSubscription(subscription.Id)
 
 		lastPositionOrRevision, err := s.readAndSendToSubscription(ctx, subscription, opts, -1)
 		if err != nil {
