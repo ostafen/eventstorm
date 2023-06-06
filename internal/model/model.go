@@ -33,6 +33,11 @@ type Event struct {
 	GlobalPosition   uint64
 }
 
+type SubscriptionEvent struct {
+	Err   error
+	Event *Event
+}
+
 const (
 	ContentTypeMetadata = "content-type"
 	EventTypeMetadata   = "type"

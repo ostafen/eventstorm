@@ -489,11 +489,7 @@ func (s *ServiceSuite) TestStreamSubscription() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		err := s.svc.Subscribe(ctx, func(se *model.Event) error {
-			events = append(events, se)
-			wg.Done()
-			return nil
-		}, model.ReadOptions{
+		sub, err := s.svc.Subscribe(ctx, model.ReadOptions{
 			Direction: model.DirectionForwards,
 			Count:     -1,
 			StreamOptions: &model.StreamOptions{
@@ -501,6 +497,14 @@ func (s *ServiceSuite) TestStreamSubscription() {
 			},
 		})
 		s.NoError(err)
+
+		for {
+			se := <-sub.EventCh
+			s.NoError(se.Err)
+
+			events = append(events, se.Event)
+			wg.Done()
+		}
 	}()
 
 	_, err := s.svc.Append(context.TODO(), "test-stream", &bufferEventStream{Events: genEvents(90)}, model.AppendOptions{Kind: model.RevisionAppendKindAny})

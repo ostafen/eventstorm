@@ -86,20 +86,39 @@ const (
 )
 
 func (s *grpcServer) handleSubscriptionRequest(server Streams_ReadServer, opts model.ReadOptions) error {
-	if err := s.sendSubscriptionConfirmation(server); err != nil {
+	subscription, err := s.svc.Subscribe(server.Context(), opts)
+	if err != nil {
+		return err
+	}
+
+	if err := s.sendSubscriptionConfirmation(server, subscription.Id); err != nil {
 		return err
 	}
 
 	nSent := 0
-	return s.svc.Subscribe(server.Context(), func(e *model.Event) error {
-		if nSent%checkpointMod == 0 {
-			if err := s.sendSubscriptionCheckpoint(server, e.GlobalPosition); err != nil {
+	for {
+		select {
+		case <-server.Context().Done():
+			return nil
+		case se := <-subscription.EventCh:
+			if se.Err != nil {
+				// TODO: send subscription dropped
+				return err
+			}
+			e := se.Event
+
+			if nSent%checkpointMod == 0 {
+				if err := s.sendSubscriptionCheckpoint(server, e.GlobalPosition); err != nil {
+					return err
+				}
+			}
+			nSent++
+
+			if err := s.sendEvent(server, e); err != nil {
 				return err
 			}
 		}
-		nSent++
-		return s.sendEvent(server, e)
-	}, opts)
+	}
 }
 
 func (s *grpcServer) sendStreamNotFound(server Streams_ReadServer, stream string) error {
@@ -114,15 +133,11 @@ func (s *grpcServer) sendStreamNotFound(server Streams_ReadServer, stream string
 	})
 }
 
-func (s *grpcServer) sendSubscriptionConfirmation(server Streams_ReadServer) error {
-	subscriptionId, err := uuid.NewV4()
-	if err != nil {
-		return err
-	}
+func (s *grpcServer) sendSubscriptionConfirmation(server Streams_ReadServer, id string) error {
 	return server.Send(&ReadResp{
 		Content: &ReadResp_Confirmation{
 			Confirmation: &ReadResp_SubscriptionConfirmation{
-				SubscriptionId: subscriptionId.String(),
+				SubscriptionId: id,
 			},
 		},
 	})
