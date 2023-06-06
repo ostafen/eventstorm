@@ -1,21 +1,27 @@
 package projections
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/dop251/goja"
 	"github.com/ostafen/eventstorm/internal/model"
+	"github.com/ostafen/eventstorm/internal/streams"
 )
 
 var ErrProjectionExist = errors.New("projection already exists")
 
+type subscribeFunc func(context.Context, model.ReadOptions) (*streams.Subscription, error)
+
 type Runtime struct {
+	subscribe   subscribeFunc
 	projections map[string]*Projection
 }
 
-func NewRuntime() *Runtime {
+func NewRuntime(subscribe subscribeFunc) *Runtime {
 	return &Runtime{
+		subscribe:   subscribe,
 		projections: map[string]*Projection{},
 	}
 }
@@ -25,7 +31,7 @@ func (r *Runtime) Register(source, name string) error {
 		return ErrProjectionExist
 	}
 
-	p, err := NewProjection(source, name)
+	p, err := CompileProjection(source, name)
 	if err != nil {
 		return err
 	}
@@ -115,6 +121,9 @@ func (s *SelectorOptions) Matches(e *model.Event) bool {
 type Projection struct {
 	runtime *goja.Runtime
 
+	defaultState    any
+	partitionsState map[string]any
+
 	Name    string
 	Options Options
 	Output  bool
@@ -164,46 +173,18 @@ func (w *when) findHandler(handlers map[string]gojaFunc, eventType string) gojaF
 	return h
 }
 
-type state struct {
-	init  bool
-	value any
-}
-
-type Partitions map[string]*state
-
-func (p Partitions) get(partition string) *state {
-	partitionState := p[partition]
-	if partitionState == nil {
-		partitionState = &state{}
-		p[partition] = partitionState
-	}
-	return partitionState
-}
-
 func (w *when) When(handlers map[string]gojaFunc) WhenRes {
-	var defaultState state
-	var currState *state = &defaultState
-
-	partitions := Partitions{}
-
-	w.p.updateFunc = w.p.updateFunc.Chain(func(_ any, e Event) (any, bool) {
-		if w.p.partitionBy != nil {
-			p := w.p.partitionBy(e)
-			currState = partitions.get(p)
-			e.Partition = p
-		}
-
-		if !currState.init {
-			init := handlers[initFunc]
-			currState.value = init.Call(w.p.runtime)
-			currState.init = true
+	w.p.updateFunc = w.p.updateFunc.Chain(func(state any, e Event) (any, bool) {
+		if state == nil {
+			initFunc := handlers[initFunc]
+			state = initFunc.Call(w.p.runtime)
 		}
 
 		handlerFunc := w.findHandler(handlers, e.Type)
 		if handlerFunc != nil {
-			handlerFunc.Call(w.p.runtime, currState.value, e)
+			handlerFunc.Call(w.p.runtime, state, e)
 		}
-		return currState.value, true
+		return state, true
 	})
 
 	return WhenRes{
@@ -253,10 +234,7 @@ type FilterByRes struct {
 func (t *filterBy) FilterBy(filterFunc gojaFunc) FilterByRes {
 	t.p.updateFunc = t.p.updateFunc.Chain(func(state any, e Event) (any, bool) {
 		forward, _ := filterFunc.Call(t.p.runtime, state).(bool)
-		if forward {
-			return state, forward
-		}
-		return nil, forward
+		return state, forward
 	})
 
 	return FilterByRes{
@@ -283,6 +261,7 @@ type PartitionByRes struct {
 }
 
 func (p *partitionBy) PartitionBy(partitionFunc gojaFunc) PartitionByRes {
+	p.p.partitionsState = map[string]any{}
 	p.p.partitionBy = func(e Event) string {
 		partition, _ := partitionFunc.Call(p.p.runtime, e).(string)
 		return partition
@@ -381,11 +360,11 @@ func (p *Projection) fromAll() FromAllRes {
 	}
 }
 
-func NewProjection(source, name string) (*Projection, error) {
+func CompileProjection(source, name string) (*Projection, error) {
 	p := &Projection{
 		runtime:    goja.New(),
 		Name:       name,
-		updateFunc: func(state any, e Event) (any, bool) { return nil, true },
+		updateFunc: func(state any, e Event) (any, bool) { return state, true },
 	}
 	p.setup()
 
@@ -393,8 +372,45 @@ func NewProjection(source, name string) (*Projection, error) {
 	return p, err
 }
 
-func (p *Projection) Update(e Event) (any, bool) {
-	return p.updateFunc(nil, e)
+func (p *Projection) SetState(state any) {
+	p.defaultState = state
+}
+
+func (p *Projection) SetPartitionState(partition string, state any) {
+	if p.partitionsState == nil {
+		p.partitionsState = make(map[string]any)
+	}
+	p.partitionsState[partition] = state
+}
+
+func (p *Projection) getState(e Event) (any, string) {
+	if !p.IsPartitioned() {
+		return p.defaultState, ""
+	}
+
+	partition := p.partitionBy(e)
+	return p.partitionsState[partition], partition
+}
+
+func (p *Projection) IsPartitioned() bool {
+	return p.partitionBy != nil
+}
+
+func (p *Projection) Update(e Event) any {
+	state, partition := p.getState(e)
+
+	e.Partition = partition
+	newState, forward := p.updateFunc(state, e)
+	if p.IsPartitioned() {
+		p.partitionsState[partition] = newState
+	} else {
+		p.defaultState = newState
+	}
+
+	if !forward {
+		return nil
+	}
+	return newState
 }
 
 func panicIfErr(err error) {
@@ -412,7 +428,7 @@ func (p *Projection) setup() {
 	p.setupHandlers()
 }
 
-func debug(a ...any) {
+func log(a ...any) {
 	fmt.Println(a...)
 }
 
@@ -429,6 +445,6 @@ func (p *Projection) setupHandlers() {
 	err = p.runtime.Set("fromStreams", p.fromStreams)
 	panicIfErr(err)
 
-	err = p.runtime.Set("debug", debug)
+	err = p.runtime.Set("log", log)
 	panicIfErr(err)
 }

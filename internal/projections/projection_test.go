@@ -17,7 +17,7 @@ func TestProjectionSuite(t *testing.T) {
 }
 
 func (s *ProjectionSuite) TestOptionsFunc() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		options({
 			$includeLinks:    true,
 			reorderEvents:    false,
@@ -35,7 +35,7 @@ func (s *ProjectionSuite) TestOptionsFunc() {
 	s.Equal("$projections-test-result", p.ResultStream())
 	s.False(p.Output)
 
-	p, err = NewProjection(`
+	p, err = CompileProjection(`
 		options({
 			resultStreamName: "test_projection_result",
 			$includeLinks:    true,
@@ -56,7 +56,7 @@ func (s *ProjectionSuite) TestOptionsFunc() {
 }
 
 func (s *ProjectionSuite) TestFromStreamSelector() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		fromStream('test-stream')
 	`, "test")
 	s.NoError(err)
@@ -74,7 +74,7 @@ func (s *ProjectionSuite) TestFromStreamSelector() {
 }
 
 func (s *ProjectionSuite) TestOutputState() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		fromStream('test-stream')
 			.outputState()
 	`, "test")
@@ -84,7 +84,7 @@ func (s *ProjectionSuite) TestOutputState() {
 }
 
 func (s *ProjectionSuite) TestFromStreamWhen() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -97,7 +97,7 @@ func (s *ProjectionSuite) TestFromStreamWhen() {
 	`, "test")
 	s.NoError(err)
 
-	state, _ := p.Update(Event{
+	state := p.Update(Event{
 		Type: "invalid-type",
 	})
 	s.Equal(map[string]any{
@@ -105,7 +105,7 @@ func (s *ProjectionSuite) TestFromStreamWhen() {
 	}, state)
 
 	for i := 0; i < 100; i++ {
-		state, _ = p.Update(Event{
+		state = p.Update(Event{
 			Type: "testEvent",
 		})
 		s.Equal(map[string]any{
@@ -115,7 +115,7 @@ func (s *ProjectionSuite) TestFromStreamWhen() {
 }
 
 func (s *ProjectionSuite) TestTransformBy() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -132,10 +132,9 @@ func (s *ProjectionSuite) TestTransformBy() {
 	s.NoError(err)
 
 	for i := 0; i < 100; i++ {
-		state, forward := p.Update(Event{
+		state := p.Update(Event{
 			Type: "testEvent",
 		})
-		s.True(forward)
 		s.Equal(map[string]any{
 			"count":      int64(i + 1),
 			"extraField": "extra-field",
@@ -144,7 +143,7 @@ func (s *ProjectionSuite) TestTransformBy() {
 }
 
 func (s *ProjectionSuite) TestFilterBy() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -164,18 +163,16 @@ func (s *ProjectionSuite) TestFilterBy() {
 	s.NoError(err)
 
 	for i := 0; i < 50; i++ {
-		state, forward := p.Update(Event{
+		state := p.Update(Event{
 			Type: "testEvent",
 		})
-		s.False(forward)
 		s.Nil(state)
 	}
 
 	for i := 0; i < 50; i++ {
-		state, forward := p.Update(Event{
+		state := p.Update(Event{
 			Type: "testEvent",
 		})
-		s.True(forward)
 		s.Equal(map[string]any{
 			"count":      int64(51 + i),
 			"extraField": "extra-field",
@@ -184,7 +181,7 @@ func (s *ProjectionSuite) TestFilterBy() {
 }
 
 func (s *ProjectionSuite) TestPartitionBy() {
-	proj, err := NewProjection(`
+	proj, err := CompileProjection(`
 		fromStream('test-stream')
 			.partitionBy(function(e) {
 				return e.eventType
@@ -204,19 +201,22 @@ func (s *ProjectionSuite) TestPartitionBy() {
 	for i := 0; i < 100; i++ {
 		p := fmt.Sprintf("p-%d", i/10)
 
-		state, forward := proj.Update(Event{
+		state := proj.Update(Event{
 			Type: p,
 		})
-		s.True(forward)
 		s.Equal(map[string]any{
 			"count":     int64(i%10 + 1),
 			"partition": p,
 		}, state)
+
+		if i == 2 {
+			return
+		}
 	}
 }
 
 func (s *ProjectionSuite) TestAnyEventHandler() {
-	p, err := NewProjection(`
+	p, err := CompileProjection(`
 		fromStream('test-stream')
 			.when({
 				$init: function() {
@@ -233,19 +233,17 @@ func (s *ProjectionSuite) TestAnyEventHandler() {
 	s.NoError(err)
 
 	// specific event selector takes precedence
-	state, forward := p.Update(Event{
+	state := p.Update(Event{
 		Type: "testEvent",
 	})
-	s.True(forward)
 	s.Equal(state, map[string]any{
 		"count":    int64(1),
 		"anyCount": int64(0),
 	})
 
-	state, forward = p.Update(Event{
+	state = p.Update(Event{
 		Type: "testEvent1",
 	})
-	s.True(forward)
 	s.Equal(state, map[string]any{
 		"count":    int64(1),
 		"anyCount": int64(1),

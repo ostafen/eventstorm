@@ -30,3 +30,10 @@ func (s *projectionsService) CreateProjection(ctx context.Context, opts CreatePr
 func (s *projectionsService) UpdateProjection(ctx context.Context, opts CreateProjectionOptions) error {
 	return nil
 }
+
+func NewProjectionService(db *sql.DB, subscribe subscribeFunc) *projectionsService {
+	return &projectionsService{
+		runtime: NewRuntime(subscribe),
+		db:      db,
+	}
+}
