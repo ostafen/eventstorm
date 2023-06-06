@@ -241,13 +241,20 @@ func (s *streamService) Subscribe(ctx context.Context, opts model.ReadOptions) (
 	go func() {
 		defer s.removeSubscription(opts.StreamOptions.Identifier)
 
-		lastPositionOrRevision := s.readAndSendToSubscription(ctx, subscription, opts, -1)
+		lastPositionOrRevision, err := s.readAndSendToSubscription(ctx, subscription, opts, -1)
+		if err != nil {
+			return
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-signalCh:
-				lastPositionOrRevision = s.readAndSendToSubscription(ctx, subscription, opts, lastPositionOrRevision)
+				lastPositionOrRevision, err = s.readAndSendToSubscription(ctx, subscription, opts, lastPositionOrRevision)
+				if err != nil {
+					return
+				}
 			}
 		}
 	}()
@@ -277,11 +284,11 @@ func (s *streamService) getSubscriptionReadOpts(opts model.ReadOptions, lastPosi
 	return o
 }
 
-func (s *streamService) readAndSendToSubscription(ctx context.Context, subscription *Subscription, opts model.ReadOptions, lastPositionOrRevision int64) int64 {
+func (s *streamService) readAndSendToSubscription(ctx context.Context, subscription *Subscription, opts model.ReadOptions, lastPositionOrRevision int64) (int64, error) {
 	isAll := opts.AllOptions != nil
 	readOpts := s.getSubscriptionReadOpts(opts, lastPositionOrRevision)
 
-	if err := s.Read(ctx, func(e *model.Event) error {
+	err := s.Read(ctx, func(e *model.Event) error {
 		subscription.EventCh <- &model.SubscriptionEvent{
 			Event: e,
 			Err:   nil,
@@ -292,12 +299,13 @@ func (s *streamService) readAndSendToSubscription(ctx context.Context, subscript
 			lastPositionOrRevision = int64(e.StreamRevision)
 		}
 		return nil
-	}, readOpts); err != nil {
+	}, readOpts)
+	if err != nil {
 		subscription.EventCh <- &model.SubscriptionEvent{
 			Err: err,
 		}
 	}
-	return lastPositionOrRevision
+	return lastPositionOrRevision, err
 }
 func (s *streamService) addSubscription(sub *Subscription) {
 	s.mtx.Lock()
