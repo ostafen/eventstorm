@@ -133,7 +133,7 @@ type StreamOptions struct {
 type ReadAllKind int8
 
 const (
-	ReadAllKindStart = iota
+	ReadAllKindStart ReadAllKind = iota
 	ReadAllKindEnd
 	ReadAllKindPosition
 )

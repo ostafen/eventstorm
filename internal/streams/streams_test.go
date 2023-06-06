@@ -479,7 +479,7 @@ func (s *ServiceSuite) TestFilterStreamIdentifierByRegex() {
 	s.Len(readEvents, 3)
 }
 
-func (s *ServiceSuite) TestStreamSubscription() {
+func (s *ServiceSuite) TestSubscribeToStream() {
 	s.createStreamWithEvents("test-stream", &bufferEventStream{Events: genEvents(10)})
 
 	var wg sync.WaitGroup
@@ -488,12 +488,14 @@ func (s *ServiceSuite) TestStreamSubscription() {
 	events := make([]*model.Event, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
 		sub, err := s.svc.Subscribe(ctx, model.ReadOptions{
 			Direction: model.DirectionForwards,
 			Count:     -1,
 			StreamOptions: &model.StreamOptions{
-				Identifier: "test-stream",
+				RevisionKind: model.RevisionReadKindStart,
+				Identifier:   "test-stream",
 			},
 		})
 		s.NoError(err)
@@ -507,12 +509,14 @@ func (s *ServiceSuite) TestStreamSubscription() {
 		}
 	}()
 
-	_, err := s.svc.Append(context.TODO(), "test-stream", &bufferEventStream{Events: genEvents(90)}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
+	// these events should not be notified
+	_, err := s.svc.Append(context.TODO(), "test-stream-1", &bufferEventStream{Events: genEvents(90)}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
+	s.NoError(err)
+
+	_, err = s.svc.Append(context.TODO(), "test-stream", &bufferEventStream{Events: genEvents(90)}, model.AppendOptions{Kind: model.RevisionAppendKindAny})
 	s.NoError(err)
 
 	wg.Wait()
-
-	cancel()
 
 	s.Len(events, 100)
 
@@ -520,6 +524,43 @@ func (s *ServiceSuite) TestStreamSubscription() {
 		s.Equal(e.StreamIdentifier, "test-stream")
 		s.Equal(e.StreamRevision, uint64(i))
 	}
+}
+
+func (s *ServiceSuite) TestSubscribeToAll() {
+	for i := 0; i < 10; i++ {
+		s.createStreamWithEvents(fmt.Sprintf("test-stream-%d", i), &bufferEventStream{Events: genEvents(10)})
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(100)
+
+	events := make([]*model.Event, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		sub, err := s.svc.Subscribe(ctx, model.ReadOptions{
+			Direction: model.DirectionForwards,
+			Count:     -1,
+			AllOptions: &model.AllOptions{
+				Kind: model.ReadAllKindStart,
+			},
+		})
+		s.NoError(err)
+
+		for {
+			se := <-sub.EventCh
+			s.NoError(se.Err)
+
+			events = append(events, se.Event)
+			wg.Done()
+		}
+	}()
+
+	wg.Wait()
+
+	s.Len(events, 100)
 }
 
 func (s *ServiceSuite) readEvents(opts model.ReadOptions) ([]*model.Event, error) {

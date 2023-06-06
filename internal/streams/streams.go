@@ -269,7 +269,7 @@ func (s *streamService) getSubscriptionReadOpts(opts model.ReadOptions, lastPosi
 
 	if opts.AllOptions != nil {
 		o.AllOptions = &model.AllOptions{
-			Filter:          o.AllOptions.Filter,
+			Filter:          opts.AllOptions.Filter,
 			Kind:            model.ReadAllKindPosition,
 			PreparePosition: uint64(lastPositionOrRevision + 1),
 			CommitPosition:  uint64(lastPositionOrRevision + 1),
