@@ -238,75 +238,67 @@ func (s *streamService) Subscribe(ctx context.Context, opts model.ReadOptions) (
 
 	s.addSubscription(subscription)
 
-	var lastPositionOrRevision int64 = -1
-	updateLastPositionOrRevision := func(e *model.Event) {
-		if isAll {
-			lastPositionOrRevision = int64(e.GlobalPosition)
-		} else {
-			lastPositionOrRevision = int64(e.StreamRevision)
-		}
-	}
-
 	go func() {
-		if err := s.Read(ctx, func(e *model.Event) error {
-			subscription.EventCh <- &model.SubscriptionEvent{
-				Event: e,
-				Err:   nil,
-			}
-			updateLastPositionOrRevision(e)
-			return nil
-		}, opts); err != nil {
-			subscription.EventCh <- &model.SubscriptionEvent{
-				Err: err,
-			}
-		}
-
 		defer s.removeSubscription(opts.StreamOptions.Identifier)
 
+		lastPositionOrRevision := s.readAndSendToSubscription(ctx, subscription, opts, -1)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-signalCh:
-				o := model.ReadOptions{
-					Direction: model.DirectionForwards,
-					Count:     -1,
-				}
-
-				if isAll {
-					o.AllOptions = &model.AllOptions{
-						Filter:          o.AllOptions.Filter,
-						Kind:            model.ReadAllKindPosition,
-						PreparePosition: uint64(lastPositionOrRevision + 1),
-						CommitPosition:  uint64(lastPositionOrRevision + 1),
-					}
-				} else {
-					o.StreamOptions = &model.StreamOptions{
-						Identifier:   opts.StreamOptions.Identifier,
-						RevisionKind: model.RevisionReadKindRevision,
-						Revision:     uint64(lastPositionOrRevision + 1),
-					}
-				}
-
-				err := s.Read(ctx, func(e *model.Event) error {
-					subscription.EventCh <- &model.SubscriptionEvent{
-						Event: e,
-						Err:   nil,
-					}
-					updateLastPositionOrRevision(e)
-					return nil
-				}, o)
-				if err != nil {
-					subscription.EventCh <- &model.SubscriptionEvent{
-						Err: err,
-					}
-				}
+				lastPositionOrRevision = s.readAndSendToSubscription(ctx, subscription, opts, lastPositionOrRevision)
 			}
 		}
 	}()
 	return subscription, nil
 }
 
+func (s *streamService) getSubscriptionReadOpts(opts model.ReadOptions, lastPositionOrRevision int64) model.ReadOptions {
+	o := model.ReadOptions{
+		Direction: model.DirectionForwards,
+		Count:     -1,
+	}
+
+	if opts.AllOptions != nil {
+		o.AllOptions = &model.AllOptions{
+			Filter:          o.AllOptions.Filter,
+			Kind:            model.ReadAllKindPosition,
+			PreparePosition: uint64(lastPositionOrRevision + 1),
+			CommitPosition:  uint64(lastPositionOrRevision + 1),
+		}
+	} else {
+		o.StreamOptions = &model.StreamOptions{
+			Identifier:   opts.StreamOptions.Identifier,
+			RevisionKind: model.RevisionReadKindRevision,
+			Revision:     uint64(lastPositionOrRevision + 1),
+		}
+	}
+	return o
+}
+
+func (s *streamService) readAndSendToSubscription(ctx context.Context, subscription *Subscription, opts model.ReadOptions, lastPositionOrRevision int64) int64 {
+	isAll := opts.AllOptions != nil
+	readOpts := s.getSubscriptionReadOpts(opts, lastPositionOrRevision)
+
+	if err := s.Read(ctx, func(e *model.Event) error {
+		subscription.EventCh <- &model.SubscriptionEvent{
+			Event: e,
+			Err:   nil,
+		}
+		if isAll {
+			lastPositionOrRevision = int64(e.GlobalPosition)
+		} else {
+			lastPositionOrRevision = int64(e.StreamRevision)
+		}
+		return nil
+	}, readOpts); err != nil {
+		subscription.EventCh <- &model.SubscriptionEvent{
+			Err: err,
+		}
+	}
+	return lastPositionOrRevision
+}
 func (s *streamService) addSubscription(sub *Subscription) {
 	s.mtx.Lock()
 
